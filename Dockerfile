@@ -24,13 +24,22 @@ WORKDIR /var/www/html
 # Copy application files
 COPY . .
 
+# Create Laravel required directories and set permissions BEFORE composer install
+RUN mkdir -p storage/framework/cache/data \
+    && mkdir -p storage/framework/sessions \
+    && mkdir -p storage/framework/views \
+    && mkdir -p storage/logs \
+    && mkdir -p bootstrap/cache \
+    && chmod -R 775 storage \
+    && chmod -R 775 bootstrap/cache
+
 # Install dependencies
 RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
 
-# Set permissions
+# Set final permissions
 RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 755 /var/www/html/storage \
-    && chmod -R 755 /var/www/html/bootstrap/cache
+    && chmod -R 775 /var/www/html/storage \
+    && chmod -R 775 /var/www/html/bootstrap/cache
 
 # Enable Apache mod_rewrite
 RUN a2enmod rewrite
@@ -43,10 +52,40 @@ RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf
 # Expose port
 EXPOSE 80
 
+# Create startup script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Starting Laravel application..."\n\
+\n\
+# Generate application key if not set\n\
+if [ -z "$APP_KEY" ] || [ "$APP_KEY" = "base64:" ]; then\n\
+    echo "Generating application key..."\n\
+    php artisan key:generate --force\n\
+fi\n\
+\n\
+# Clear and cache config\n\
+php artisan config:clear\n\
+php artisan config:cache\n\
+\n\
+# Cache routes and views\n\
+php artisan route:cache\n\
+php artisan view:cache\n\
+\n\
+# Run migrations\n\
+echo "Running migrations..."\n\
+php artisan migrate --force || echo "Migration failed, continuing..."\n\
+\n\
+# Seed database\n\
+echo "Seeding database..."\n\
+php artisan db:seed --force || echo "Seeding failed, continuing..."\n\
+\n\
+# Fix permissions one more time\n\
+chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache\n\
+\n\
+echo "Starting Apache..."\n\
+apache2-foreground\n\
+' > /usr/local/bin/start.sh \
+    && chmod +x /usr/local/bin/start.sh
+
 # Start Apache
-CMD php artisan config:cache && \
-    php artisan route:cache && \
-    php artisan view:cache && \
-    php artisan migrate --force && \
-    php artisan db:seed --force && \
-    apache2-foreground
+CMD ["/usr/local/bin/start.sh"]
